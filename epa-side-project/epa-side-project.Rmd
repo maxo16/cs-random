@@ -1,0 +1,295 @@
+---
+title: "Epa-side-project"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Note: RData file is cleared because it contains assessor data which probably shouldn't be freely available. 
+```{r}
+rm(list = ls())
+```
+
+
+What I need to fix, the avenue/ave, drive/dr, is still a problem. Should be able to loop through the mailing addresses and replace them. The situs street types exclusively use the abbreviations. 
+
+```{r}
+library(readr)
+library(dplyr)
+library(stringr)
+```
+
+```{r}
+smc_secured <- read_csv("/Volumes/sdc-sus$/Restricted Data Library/SMC Assessor/smc_secured.csv")
+```
+
+Looks like I can ignore the SITUS number 2, I'll just paste the SITUS information together, then make everything lowercase, then compare. 
+
+
+Paste helper function. It's not working because I replaced the NAs, I should actually keep them in because this function will know what to do. 
+
+```{r}
+paste_helper <- function(num, direct, street, street_type) {
+  if (is.na(direct)) {
+    # print("NA present")
+    return(paste(num, street, street_type))
+  } else {
+    return(paste(num, direct, street, street_type))
+  }
+}
+```
+
+Use for debugging
+```{r}
+smc_secured$situs_pasted[36] == smc_secured$mailing_lower[36]
+paste_helper(smc_secured$situs1_fixed[36], smc_secured$`SITUS DIRECTION`[36], smc_secured$`SITUS STREET`[36], smc_secured$`SITUS STREET TYPE`[36])
+```
+
+
+
+There's now a lowercase situs address and mailing addres column. I've moved to the epa data but I'll keep fixing it on the whole county dataset. I should keep SITUS number and see if I can't extract the first number from mailing, if these match and the addresses don't then that should be a tell tale sign that there's an input error. 
+```{r fixing names here}
+smc_secured$situs1_fixed <- gsub("(^|[^0-9])0+", "\\1", smc_secured$`SITUS NO1`, perl = TRUE)
+
+smc_secured$situs_pasted <- mapply(paste_helper, smc_secured$situs1_fixed, smc_secured$`SITUS DIRECTION`, smc_secured$`SITUS STREET`, smc_secured$`SITUS STREET TYPE`)
+
+smc_secured$situs_pasted <- tolower(smc_secured$situs_pasted)
+
+smc_secured$mailing_lower <- tolower(smc_secured$`MAILING ADDRESS 1`)
+
+smc_secured$mailing_number <- gsub("([0-9]+).*$", "\\1", smc_secured$`MAILING ADDRESS 1`)
+
+smc_secured$mailing_city_lower <- tolower(smc_secured$`MAILING CITY`)
+smc_secured$situs_city_lower <- tolower(smc_secured$`SITUS CITY`)
+
+# I'll do the replacing of the mailing addresses here since it's a little all over the place. 
+# In mailing, there's a problem with no and so being present but reprsenting n and s. Should be able to replace these easily. 
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "avenue", "ave")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "drive", "dr")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "dr.", "dr")
+# seems to go down when I do these, wouldn't surprise me if it's finding these inside a word, let me try by adding spaces before and after. This may have done the trick. 
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, " no ", " n ")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, " so ", " s ")
+
+# This seems to have brought down the number of matches. It's weird that this would produce fewer matches, it's about 20 but still it's weird. 
+# smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, " north ", " n ")
+
+# Seems like almost every instance of woodrow was entered as woodrw
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "woodrw", "woodrow")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "street", "st")
+
+# Unlike north, this bumped up the number of matches. 
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, " south ", " s ")
+
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, " east ", " e ")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "road", "rd")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "westminister", "westminster")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "mellow", "mello")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "alberini", "alberni")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "court", "ct")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, " way", " wy")
+# Also need to change this in the situs pasted as well. 
+smc_secured$situs_pasted <- str_replace(smc_secured$situs_pasted, " way", " wy")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, " lane", " ln")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "o'connor", "oconnor")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "circle", "cir")
+smc_secured$situs_pasted <- str_replace(smc_secured$situs_pasted, "east ", "e ")
+smc_secured$situs_pasted <- str_replace(smc_secured$situs_pasted, "o'keefe", "okeefe")
+smc_secured$mailing_lower <- str_replace(smc_secured$mailing_lower, "o'keefe", "okeefe")
+```
+
+```{r ad hoc fixes}
+# 062123220, address should be westminister ave
+smc_secured$mailing_lower[which(smc_secured$APN == "062123220")] <- "1132 westminster ave"
+```
+
+
+Now just do a comparison. My beloved R should just be able to take the vectors in and compare them. 
+```{r}
+# When I used pasting method 1, this does not return many results. Let me see if I do this another way if it's any better. 
+smc_secured$address_flag <- smc_secured$situs_pasted == smc_secured$mailing_lower
+
+
+
+# See how many matches there were. 
+sum(smc_secured$address_flag, na.rm = TRUE)
+sum(smc_secured$address_flag, na.rm = TRUE)/nrow(smc_secured)
+
+# This is saying about 50% of parcels are owner occupied, I'd believe this. 
+```
+
+Now, see how the homestead exemption compares to the address map. Just stick to the HO code for now, that seems to be it. There's one outlying value but I don't think I'll worry about that right now. 
+```{r}
+smc_secured$exempt_flag <- ifelse(smc_secured$`EXEMPTION CODE` == 'HO', TRUE, FALSE)
+
+sum(smc_secured$exempt_flag, na.rm = TRUE)
+```
+
+Let me see how much the exempt and address flags agree with each other. 
+```{r}
+num_agree <- sum(smc_secured$address_flag*smc_secured$exempt_flag, na.rm = TRUE)
+num_agree
+```
+
+Latest number is 93803
+
+```{r}
+smc_resident <- read_csv("/Volumes/sdc-sus$/Restricted Data Library/SMC Assessor/smc_resident.csv")
+smc_multifam <- read_csv("/Volumes/sdc-sus$/Restricted Data Library/SMC Assessor/smc_multifam.csv")
+```
+
+
+ToDo:
+create new dataframes out of these that have weights and use code. 
+```{r}
+smc_resident_slim <- smc_resident %>% select(APN, `PROPERTY USE CODE`)
+smc_resident_slim$units <- 1
+
+smc_multifam_slim <- smc_multifam %>% mutate("units" = `# OF STUDIO` + `# OF 1 BEDROOM/1 BATH` + `# OF 2 BEDROOMS/1 BATH` + `# OF 2 BEDROOMS/2 BATHS`) %>% select(APN, `PROPERTY USE CODE`, units)
+
+smc_units <- rbind(smc_resident_slim, smc_multifam_slim)
+```
+
+
+
+I see in multifam, there's a units allowed column. 
+PUC code will say if it's vacant or not. 
+```{r}
+unique(smc_secured$`PUC CODE`)
+```
+
+Let me explore some of the owner occupied mismatches. 
+Looks like there's a problem with "avenue" showing up in the mailing address. Would be good to go up ahead and replace this. Woudn't surprise me if other street types are also causing this error. 
+
+What's probably most interesting is to see where the HO says owner occupied and the mailing and situs addresses disagree. There are a lot of "120 mayfair ave" != "120 n mayfair avenue" errors. Let me just go back and add Situs Direction and see if this helps. 
+```{r}
+smc_secured_slim <- smc_secured %>% select(c(APN, `PUC CODE`, `SITUS CITY`, situs_pasted, mailing_lower, address_flag, exempt_flag, mailing_number, situs1_fixed, situs_city_lower, mailing_city_lower, `NET VALUE`))
+smc_secured_slim$flags_agree <- smc_secured_slim$address_flag*smc_secured_slim$exempt_flag
+smc_secured_slim$number_flag <- smc_secured_slim$mailing_number == smc_secured_slim$situs1_fixed
+
+# View(filter(smc_secured_slim, flags_agree == FALSE))
+# View(filter(smc_secured))
+```
+
+I'll just focus on EPA for right now. It'll be easier to just map the codes I'm interested in here. Just make a small df that maps the codes of interest in the columns I'm interested in. 
+
+```{r code helper function}
+code_helper <- function(puc_code) {
+  if (puc_code == "01") {
+    return("a")
+  } else if (puc_code %in% c("02","03","04","05","97")) {
+    return("b")
+  } else if (puc_code == "00") {
+    return("c")
+  } else {
+    return("d")
+  }
+}
+```
+
+
+```{r epa}
+epa_secured <- smc_secured_slim %>% filter(`SITUS CITY` == "EAST PALO ALTO")
+sum(epa_secured$address_flag)
+sum(epa_secured$exempt_flag, na.rm = TRUE)
+
+
+# Fastest would be just a left_join
+# count(epa_secured, `PUC CODE`)
+# a: 1
+# b: 2,3,4,5,97
+# c: 00
+# d: other
+column_codes <- data.frame(`PUC CODE` = unique(epa_secured$`PUC CODE`))
+
+column_codes$column_code <-  unlist(lapply(column_codes$PUC.CODE,code_helper))
+
+names(epa_secured)[2] <- names(column_codes)[1]
+
+epa_secured <- epa_secured %>% left_join(column_codes)
+
+
+epa_secured <- epa_secured %>% left_join(smc_units)
+# View(filter(epa_secured, address_flag == FALSE))
+# What I want to view now is when the number flag is true but the address flag is false
+# View(filter(epa_secured, address_flag == FALSE & number_flag == TRUE))
+# View(filter(epa_secured, number_flag == FALSE))
+```
+
+At this point, I'll go out on a limb and say that if the numbers match, it's owner occupied - at least in EPA. After rewviewing the results above, I'm happy with saying that. 
+
+ToDo: Map the PUC codes to the columns I want. 
+```{r parcels}
+# sanity check, this number is lower than the address flag one and it makes sense. Not everyone who is eligible for the exemption has it/has applied for it. 
+
+# sum(epa_secured$exempt_flag, na.rm = TRUE)
+
+# There's roughly 95 entries where it's ambiguous. I'm not going to worry about it for now. 
+# View(epa_secured[is.na(epa_secured$number_flag),])
+
+# Number of EPA parcels
+nrow(epa_secured)
+
+# Owner occupied, mailing and situs addresses match, or rather mailing number and situs number match. 
+epa_secured %>% filter(address_flag == TRUE) %>% group_by(column_code) %>% summarize(sum(address_flag))
+epa_secured %>% filter(address_flag == TRUE) %>% count(column_code)
+
+# Rented - owner in EPA, number flag is false but mailing address (city) is in EPA
+epa_secured %>% filter(! number_flag & mailing_city_lower == "east palo alto") %>% count(column_code)
+
+# Rented - owner not in EPA, number flag is false and mailing address != EPA
+epa_secured %>% filter(! number_flag & mailing_city_lower != "east palo alto") %>% count(column_code)
+
+```
+
+What I should be able to do for this is come up with a weigths table, join it to the dataframes I'm creating above and simply just sum the columns. I should probably do some of the preprocessing above. Moving join units up above, so that way if I run this chunk multiple times, it won't keep adding it. 
+```{r units}
+
+
+# There do appear to be a number of NAs in units, are these vacant? It would seem that most don't have a use code. 
+sum(is.na(epa_secured$units))
+#  View(epa_secured[is.na(epa_secured$units),])
+
+# Number of units in EPA
+sum(epa_secured$units, na.rm = TRUE)
+
+# Owner occupied, mailing and situs addresses match, or rather mailing number and situs number match. 
+# Need to filter address flag == true and sum
+epa_secured %>% filter(address_flag == TRUE) %>% group_by(column_code) %>% summarize(sum(units, na.rm = TRUE))
+
+
+# Rented - owner in EPA, number flag is false but mailing address (city) is in EPA
+epa_secured %>% filter(! number_flag & mailing_city_lower == "east palo alto") %>% group_by(column_code) %>% summarize(sum(units, na.rm = TRUE))
+
+# Rented - owner not in EPA, number flag is false and mailing address != EPA
+epa_secured %>% filter(! number_flag & mailing_city_lower != "east palo alto") %>% group_by(column_code) %>% summarize(sum(units, na.rm = TRUE))
+```
+
+So, if I carry over the value column, I should be able to just use this code exactly except just used the median function in summarize. 
+
+```{r value}
+
+# There do appear to be a number of NAs in units, are these vacant? It would seem that most don't have a use code. 
+sum(is.na(epa_secured$units))
+# View(epa_secured[is.na(epa_secured$units),])
+
+# Number of units in EPA
+median(epa_secured$`NET VALUE`, na.rm = TRUE)
+
+# Owner occupied, mailing and situs addresses match, or rather mailing number and situs number match. 
+# Need to filter address flag == true and sum
+
+# %>% group_by(`PUC CODE`), for this one to be correct, I'd actually have to do a custom group_by, I could just map them manually and left_join, that would be a fairly easy way to address this. 
+epa_secured %>% filter(address_flag == TRUE) %>% group_by(column_code) %>% summarize(median(`NET VALUE`, na.rm = TRUE))
+
+
+# Rented - owner in EPA, number flag is false but mailing address (city) is in EPA
+epa_secured %>% filter(! number_flag & mailing_city_lower == "east palo alto") %>% group_by(column_code) %>% summarize(median(`NET VALUE`, na.rm = TRUE))
+
+# Rented - owner not in EPA, number flag is false and mailing address != EPA
+epa_secured %>% filter(! number_flag & mailing_city_lower != "east palo alto") %>% group_by(column_code) %>% summarize(median(`NET VALUE`, na.rm = TRUE))
+```

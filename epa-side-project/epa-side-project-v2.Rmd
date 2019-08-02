@@ -9,6 +9,8 @@ editor_options:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+Notes on V2: almost identical work but I'm instead using the exempt flag now in instead of the address flag. Since no entry now has an na in that column, I'm hoping it clears things up. 
+
 Note: RData file is cleared because it contains assessor data which probably shouldn't be freely available. 
 ```{r}
 rm(list = ls())
@@ -152,6 +154,9 @@ create new dataframes out of these that have weights and use code.
 smc_resident_slim <- smc_resident %>% select(APN, `PROPERTY USE CODE`)
 smc_resident_slim$units <- 1
 
+smc_multifam$`# OF STUDIO`
+smc_multifam
+
 smc_multifam_slim <- smc_multifam %>% mutate("units" = `# OF STUDIO` + `# OF 1 BEDROOM/1 BATH` + `# OF 2 BEDROOMS/1 BATH` + `# OF 2 BEDROOMS/2 BATHS`) %>% select(APN, `PROPERTY USE CODE`, units)
 
 smc_units <- rbind(smc_resident_slim, smc_multifam_slim)
@@ -238,18 +243,56 @@ ToDo: Map the PUC codes to the columns I want.
 nrow(epa_secured)
 
 # Owner occupied, mailing and situs addresses match, or rather mailing number and situs number match. 
-epa_secured %>% filter(address_flag == TRUE) %>% group_by(column_code) %>% summarize(sum(address_flag))
-epa_secured %>% filter(address_flag == TRUE) %>% count(column_code)
+epa_secured %>% filter(exempt_flag == TRUE) %>% group_by(column_code) %>% summarize(sum(exempt_flag))
+epa_secured %>% filter(exempt_flag == TRUE) %>% count(column_code)
 
 # Rented - owner in EPA, number flag is false but mailing address (city) is in EPA
-epa_secured %>% filter(! number_flag & mailing_city_lower == "east palo alto") %>% count(column_code)
+epa_secured %>% filter(! exempt_flag & mailing_city_lower == "east palo alto") %>% count(column_code)
 
 # Rented - owner not in EPA, number flag is false and mailing address != EPA
-epa_secured %>% filter(! number_flag & mailing_city_lower != "east palo alto") %>% count(column_code)
+epa_secured %>% filter(! exempt_flag & mailing_city_lower != "east palo alto") %>% count(column_code)
 
 ```
 
 What I should be able to do for this is come up with a weigths table, join it to the dataframes I'm creating above and simply just sum the columns. I should probably do some of the preprocessing above. Moving join units up above, so that way if I run this chunk multiple times, it won't keep adding it. 
+
+
+There are some NA unit counts, I could just be conservative and set them to 1 unit, or, might be able to go back and fix it quickly. 
+
+
+I'll just have to write a helper function to fix the number of units, it has to be a function because it needs to test if the number of units is na or not. 
+```{r units fixer}
+units_fixer <- function(unit_count, puc_code) {
+  # only needs to enter any statement if unit count is na
+  if (is.na(unit_count)) {
+    if (puc_code == "01") {
+      return(1)
+    } else if (puc_code == "02") {
+      return(2)
+    } else if (puc_code == "03") {
+      return(3)
+    } else if (puc_code == "04") {
+      return(4)
+    } else if (puc_code == "05") {
+      return(5)
+    } else if (puc_code == "07") {
+      return(1)
+    } else if (puc_code == "91") {
+      return(1)
+    }  else if (puc_code == "92") {
+      return(2)
+    } else if (puc_code == "97") {
+      return(1)
+    } else {
+      return(0)
+    }
+  } else {
+    return(unit_count)
+  }
+}
+```
+
+
 ```{r units}
 
 
@@ -258,18 +301,25 @@ sum(is.na(epa_secured$units))
 #  View(epa_secured[is.na(epa_secured$units),])
 
 # Number of units in EPA
+# Hmmmmmm, so even though every property in the county appears to have a units count based on the multi_fam sheet, it looks like there are some joins in EPA that are failing, I'll just use code to estimate. 
 sum(epa_secured$units, na.rm = TRUE)
 
+epa_secured$units <- unlist(mapply(units_fixer,epa_secured$units, epa_secured$PUC.CODE))
+
+sum(epa_secured$units)
 # Owner occupied, mailing and situs addresses match, or rather mailing number and situs number match. 
 # Need to filter address flag == true and sum
-epa_secured %>% filter(address_flag == TRUE) %>% group_by(column_code) %>% summarize(sum(units, na.rm = TRUE))
+# I think what may be happening is that every parcel has an exemption flag but not everything is having a units count joined to it. 
+epa_secured %>% filter(exempt_flag == TRUE) %>% group_by(column_code) %>% summarize(sum(units))
 
+# From parcels
+# epa_secured %>% filter(exempt_flag == TRUE) %>% count(column_code)
 
 # Rented - owner in EPA, number flag is false but mailing address (city) is in EPA
-epa_secured %>% filter(! number_flag & mailing_city_lower == "east palo alto") %>% group_by(column_code) %>% summarize(sum(units, na.rm = TRUE))
+epa_secured %>% filter(! exempt_flag & mailing_city_lower == "east palo alto") %>% group_by(column_code) %>% summarize(sum(units))
 
 # Rented - owner not in EPA, number flag is false and mailing address != EPA
-epa_secured %>% filter(! number_flag & mailing_city_lower != "east palo alto") %>% group_by(column_code) %>% summarize(sum(units, na.rm = TRUE))
+epa_secured %>% filter(! exempt_flag & mailing_city_lower != "east palo alto") %>% group_by(column_code) %>% summarize(sum(units))
 ```
 
 So, if I carry over the value column, I should be able to just use this code exactly except just used the median function in summarize. 
@@ -287,12 +337,12 @@ median(epa_secured$`NET VALUE`, na.rm = TRUE)
 # Need to filter address flag == true and sum
 
 # %>% group_by(`PUC CODE`), for this one to be correct, I'd actually have to do a custom group_by, I could just map them manually and left_join, that would be a fairly easy way to address this. 
-epa_secured %>% filter(address_flag == TRUE) %>% group_by(column_code) %>% summarize(median(`NET VALUE`, na.rm = TRUE))
+epa_secured %>% filter(exempt_flag == TRUE) %>% group_by(column_code) %>% summarize(median(`NET VALUE`, na.rm = TRUE))
 
 
 # Rented - owner in EPA, number flag is false but mailing address (city) is in EPA
-epa_secured %>% filter(! number_flag & mailing_city_lower == "east palo alto") %>% group_by(column_code) %>% summarize(median(`NET VALUE`, na.rm = TRUE))
+epa_secured %>% filter(! exempt_flag & mailing_city_lower == "east palo alto") %>% group_by(column_code) %>% summarize(median(`NET VALUE`, na.rm = TRUE))
 
 # Rented - owner not in EPA, number flag is false and mailing address != EPA
-epa_secured %>% filter(! number_flag & mailing_city_lower != "east palo alto") %>% group_by(column_code) %>% summarize(median(`NET VALUE`, na.rm = TRUE))
+epa_secured %>% filter(! exempt_flag & mailing_city_lower != "east palo alto") %>% group_by(column_code) %>% summarize(median(`NET VALUE`, na.rm = TRUE))
 ```
